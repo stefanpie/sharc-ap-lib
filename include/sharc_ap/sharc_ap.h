@@ -1,175 +1,194 @@
+#pragma once
 
-// Sharc_ap is an simple and compact C++ library for fixed point data types and math functions.
-// It is designed to be used in HLS synthesis and is compatible with Xilinx Vitid HLS.
+#include <cstdint>
+#include <functional>
+#include <limits>
+#include <type_traits>
+
+#define static_message(msg) _Pragma("message(\"" msg "\")")
 
 
-// Implement a fixed point data type with a specified number of integer and fractional bits.
-// The number of total bits is specifdeb by W and the number of fractional bits is specified by I.
+namespace sharc_ap_lib
+{
 
-template<int W, int I, typename base_type=int32_t>
-class sharc_ap_fixed {
-public:
-    // bit array to hold the data
+    // sharc_ap_fixed is an simple and compact C++ class that implements fixed-point data types.
+    // It uses fixed sized integers to store the data and specifies the number of fractional bits.
+    template <typename base_type = int32_t, typename intermediate_type = int64_t, const uint fraction_bits = 16>
+    class sharc_ap_fixed
+    {
+        static_assert(std::is_integral<base_type>::value, "base_type must be an integral type");
+        static_assert(fraction_bits > 0, "fraction_bits must be greater than zero");
+        static_assert(fraction_bits <= sizeof(base_type) * 8 - 1, "base_type must at least be able to contain entire fraction, with space for at least one integral bit");
+        static_assert(sizeof(intermediate_type) >= sizeof(base_type), "intermediate_type must be larger than base_type");
+        static_assert(std::is_signed<intermediate_type>::value == std::is_signed<base_type>::value, "intermediate_type must have same signedness as base_type");        
 
-    // restric base type to only be of type int32 or int64 or int16 or int8
-    static_assert(std::is_same<base_type, int8_t>::value, "base_type must be int32_t or int64_t");
-    static_assert(std::is_same<base_type, int16_t>::value, "base_type must be int32_t or int64_t");
-    static_assert(std::is_same<base_type, int32_t>::value, "base_type must be int32_t or int64_t");
-    static_assert(std::is_same<base_type, int64_t>::value, "base_type must be int32_t or int64_t");
+    private:
 
-    // restrict the number of bits to be between 1 and 64
-    static_assert(W > 0, "W must be greater than 0");
-    static_assert(W <= 64, "W must be less than or equal to 64");
+    public:
+        static constexpr uint FRACTION_BITS = fraction_bits;
+        static constexpr base_type FRACTION_MULT = base_type(1) << fraction_bits;
+        
+        base_type v = 0;
 
-    // restrict the number of fractional bits to be between 0 and W
-    static_assert(I >= 0, "I must be greater than or equal to 0");
-    static_assert(I <= W, "I must be less than or equal to W");
+        sharc_ap_fixed() = default;
 
-    // attributes
-    static const int width = W;
-    static const int i_width = I;
-    static const int f_width = W - I;
-    base_type value = 0;
+        // constructor from integral types
+        template <typename T, std::enable_if_t<std::is_integral<T>::value || std::is_floating_point<T>::value, int> = 0>
+        constexpr sharc_ap_fixed(T value)
+        {
+            const bool is_integral = std::is_integral<T>::value;
+            const bool is_floating_point = std::is_floating_point<T>::value;
 
-public:
+            const bool is_valid_type = is_integral || is_floating_point;
+            static_assert(is_valid_type, "sharc_ap_fixed can only be constructed from integral or floating point types");
 
-    // constructor form int value
-    sharc_ap_fixed(const int init_value) {
-        value = init_value << f_width;
-    }
-    // constructor form double value
-    sharc_ap_fixed(const double init_value) {
-        value = (base_type)(init_value * (1 << f_width));
-    }
-    // constructor form float value
-    sharc_ap_fixed(const float init_value) {
-        value = (base_type)(init_value * (1 << f_width));
-    }
-    // constructor form sharc_ap_fixed value
-    sharc_ap_fixed(const sharc_ap_fixed<W, I, base_type> &init_value) {
-        value = init_value.value;
-    }
+            v = static_cast<base_type>(value * FRACTION_MULT);
+        }
 
-    // assignment operator from int
-    sharc_ap_fixed<W, I, base_type> &operator=(const int rhs) {
-        value = rhs << f_width;
-        return *this;
-    }
-    // assignment operator from double
-    sharc_ap_fixed<W, I, base_type> &operator=(const double rhs) {
-        value = (base_type)(rhs * (1 << f_width));
-        return *this;
-    }
-    // assignment operator from float
-    sharc_ap_fixed<W, I, base_type> &operator=(const float rhs) {
-        value = (base_type)(rhs * (1 << f_width));
-        return *this;
-    }
-    // assignment operator from sharc_ap_fixed
-    sharc_ap_fixed<W, I, base_type> &operator=(const sharc_ap_fixed<W, I, base_type> &rhs) {
-        value = rhs.value;
-        return *this;
-    }
+        // constructor from sharc_ap_fixed
+        template <typename B, typename I, uint D>
+        constexpr sharc_ap_fixed(const sharc_ap_fixed<B, I, D>& other)
+        {   
+            if (D == fraction_bits)
+            {
+                v = other.v;
+            }
+            else if(D < fraction_bits)
+            {
+                v = other.v << (fraction_bits - D);
+            }
+            else
+            {
+                v = other.v >> (D - fraction_bits);
+            }
+        }
 
-    // unary minus operator
-    sharc_ap_fixed<W, I, base_type> operator-() const {
-        sharc_ap_fixed<W, I, base_type> result;
-        result.value = -value;
+        // cast operators
+        template <typename T, std::enable_if_t<std::is_floating_point<T>::value, int> = 0>
+        operator T() const
+        {
+            return static_cast<T>(v) / FRACTION_MULT;
+        }
+
+        template <typename T, std::enable_if_t<std::is_integral<T>::value, int> = 0>
+        operator T() const
+        {
+            return static_cast<T>(v >> fraction_bits);
+        }
+
+        template <typename B, typename I, uint D>
+        operator sharc_ap_fixed<B, I, D>() const
+        {
+            return sharc_ap_fixed<B, I, D>(*this);
+        }
+
+        // add
+        sharc_ap_fixed& operator+=(const sharc_ap_fixed& other)
+        {
+            v += other.v;
+            return *this;
+        }
+
+        // subtract
+        sharc_ap_fixed& operator-=(const sharc_ap_fixed& other)
+        {
+            v -= other.v;
+            return *this;
+        }
+
+        // multiply
+        sharc_ap_fixed& operator*=(const sharc_ap_fixed& other)
+        {   
+            v = static_cast<base_type>((static_cast<intermediate_type>(v) * other.v) / FRACTION_MULT);
+            return *this;
+        }
+
+        // divide
+        sharc_ap_fixed& operator/=(const sharc_ap_fixed& other)
+        {
+            v = static_cast<base_type>((static_cast<intermediate_type>(v) * FRACTION_MULT) / other.v);
+            return *this;
+        }
+
+    };
+
+    // implement binary operators
+    template <typename B, typename I, uint D>
+    sharc_ap_fixed<B, I, D> operator+(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        sharc_ap_fixed<B, I, D> result = a;
+        result += b;
         return result;
     }
 
-    // addition operator
-    sharc_ap_fixed<W, I, base_type> operator+(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        sharc_ap_fixed<W, I, base_type> result;
-        result.value = value + rhs.value;
-        return result;
-    }
-    // subtraction operator
-    sharc_ap_fixed<W, I, base_type> operator-(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        sharc_ap_fixed<W, I, base_type> result;
-        result.value = value - rhs.value;
-        return result;
-    }
-    // multiplication operator
-    sharc_ap_fixed<W, I, base_type> operator*(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        sharc_ap_fixed<W, I, base_type> result;
-        result.value = (base_type)(((int64_t)value * (int64_t)rhs.value) >> f_width);
-        return result;
-    }
-    // division operator
-    sharc_ap_fixed<W, I, base_type> operator/(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        sharc_ap_fixed<W, I, base_type> result;
-        result.value = (base_type)(((int64_t)value << f_width) / (int64_t)rhs.value);
+    template <typename B, typename I, uint D>
+    sharc_ap_fixed<B, I, D> operator-(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        sharc_ap_fixed<B, I, D> result = a;
+        result -= b;
         return result;
     }
 
-    // addition assignment operator
-    sharc_ap_fixed<W, I, base_type> &operator+=(const sharc_ap_fixed<W, I, base_type> &rhs) {
-        value += rhs.value;
-        return *this;
-    }
-    // subtraction assignment operator
-    sharc_ap_fixed<W, I, base_type> &operator-=(const sharc_ap_fixed<W, I, base_type> &rhs) {
-        value -= rhs.value;
-        return *this;
-    }
-    // multiplication assignment operator
-    sharc_ap_fixed<W, I, base_type> &operator*=(const sharc_ap_fixed<W, I, base_type> &rhs) {
-        value = (base_type)(((int64_t)value * (int64_t)rhs.value) >> f_width);
-        return *this;
-    }
-    // division assignment operator
-    sharc_ap_fixed<W, I, base_type> &operator/=(const sharc_ap_fixed<W, I, base_type> &rhs) {
-        value = (base_type)(((int64_t)value << f_width) / (int64_t)rhs.value);
-        return *this;
+    template <typename B, typename I, uint D>
+    sharc_ap_fixed<B, I, D> operator*(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        sharc_ap_fixed<B, I, D> result = a;
+        result *= b;
+        return result;
     }
 
-    // equality operator
-    bool operator==(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value == rhs.value;
-    }
-    // inequality operator
-    bool operator!=(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value != rhs.value;
-    }
-    // less than operator
-    bool operator<(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value < rhs.value;
-    }
-    // greater than operator
-    bool operator>(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value > rhs.value;
-    }
-    // less than or equal to operator
-    bool operator<=(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value <= rhs.value;
-    }
-    // greater than or equal to operator
-    bool operator>=(const sharc_ap_fixed<W, I, base_type> &rhs) const {
-        return value >= rhs.value;
+    template <typename B, typename I, uint D>
+    sharc_ap_fixed<B, I, D> operator/(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        sharc_ap_fixed<B, I, D> result = a;
+        result /= b;
+        return result;
     }
 
-    // conversion to double
-    operator double() const {
-        return (double)value / (1 << f_width);
-    }
-    // conversion to float
-    operator float() const {
-        return (float)value / (1 << f_width);
-    }
-    // conversion to int
-    operator int() const {
-        return value >> f_width;
+    // implement comparison operators
+    template <typename B, typename I, uint D>
+    bool operator==(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v == b.v;
     }
 
-    // print to stream
-    void print(std::ostream &os) const {
-        os << (double)*this;
+    template <typename B, typename I, uint D>
+    bool operator!=(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v != b.v;
     }
-};
 
-// implement pow
-template<int W, int I, typename base_type>
-sharc_ap_fixed<W, I, base_type> pow(const sharc_ap_fixed<W, I, base_type> &base, const sharc_ap_fixed<W, I, base_type> &exponent) {
-    sharc_ap_fixed<W, I, base_type> result;
+    template <typename B, typename I, uint D>
+    bool operator<(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v < b.v;
+    }
+
+    template <typename B, typename I, uint D>
+    bool operator<=(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v <= b.v;
+    }
+
+    template <typename B, typename I, uint D>
+    bool operator>(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v > b.v;
+    }
+
+    template <typename B, typename I, uint D>
+    bool operator>=(const sharc_ap_fixed<B, I, D>& a, const sharc_ap_fixed<B, I, D>& b)
+    {
+        return a.v >= b.v;
+    }
     
+
+
+using sharc_ap_fixed_16_8 = sharc_ap_fixed<int16_t, int32_t, 8>;
+using sharc_ap_fixed_16_12 = sharc_ap_fixed<int16_t, int32_t, 12>;
+using sharc_ap_fixed_32_16 = sharc_ap_fixed<int32_t, int64_t, 16>;
+using sharc_ap_fixed_32_24 = sharc_ap_fixed<int32_t, int64_t, 24>;
+using sharc_ap_fixed_64_32 = sharc_ap_fixed<int64_t, int64_t, 32>;
+using sharc_ap_fixed_64_48 = sharc_ap_fixed<int64_t, int64_t, 48>;
+
+}
